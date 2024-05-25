@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/DaffaJatmiko/go-task-manager/model"
 	"github.com/DaffaJatmiko/go-task-manager/service"
@@ -12,6 +13,7 @@ import (
 type UserAPI interface {
 	Register(c *gin.Context)
 	Login(c *gin.Context)
+	Logout(c *gin.Context)
 	GetUserTaskCategory(c *gin.Context)
 }
 
@@ -52,7 +54,6 @@ func (u *userAPI) Register(c *gin.Context) {
 }
 
 func (u *userAPI) Login(c *gin.Context) {
-	// TODO: answer here
 	var user model.UserLogin
 	if err := c.ShouldBindJSON(&user); err != nil {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse("invalid decode json"))
@@ -61,11 +62,11 @@ func (u *userAPI) Login(c *gin.Context) {
 
 	if user.Email == "" || user.Password == "" {
 		c.JSON(http.StatusBadRequest, model.NewErrorResponse("email or password is empty"))
-		return 
+		return
 	}
 
 	var recordUser = model.User{
-		Email: user.Email,
+		Email:    user.Email,
 		Password: user.Password,
 	}
 
@@ -79,12 +80,36 @@ func (u *userAPI) Login(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "login success"})
 }
 
+func (u *userAPI) Logout(c *gin.Context) {
+	email, exists := c.Get("email")
+	if !exists {
+		c.JSON(http.StatusUnauthorized, model.NewErrorResponse("unauthorized"))
+		return
+	}
+
+	err := u.userService.Logout(email.(string))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("failed to logout"))
+		return
+	}
+
+	// Clear the session cookie
+	c.SetCookie("session_token", "", -1, "/", "", false, true)
+	c.JSON(http.StatusOK, gin.H{"message": "logout successful"})
+}
+
 func (u *userAPI) GetUserTaskCategory(c *gin.Context) {
-	// TODO: answer here
-	userTask, err := u.userService.GetUserTaskCategory()
+	userIDStr := c.Param("id")
+	userID, err := strconv.ParseUint(userIDStr, 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, model.NewErrorResponse("Invalid user ID"))
+		return
+	}
+
+	userTask, err := u.userService.GetUserTaskCategory(uint(userID))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse("error internal server"))
-		return 
+		return
 	}
 
 	c.JSON(http.StatusOK, userTask)

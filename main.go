@@ -1,20 +1,25 @@
 package main
 
 import (
-	"github.com/DaffaJatmiko/go-task-manager/client"
-	"github.com/DaffaJatmiko/go-task-manager/db/filebased"
-	"github.com/DaffaJatmiko/go-task-manager/handler/api"
-	"github.com/DaffaJatmiko/go-task-manager/handler/web"
-	"github.com/DaffaJatmiko/go-task-manager/middleware"
-	repo "github.com/DaffaJatmiko/go-task-manager/repository"
-	"github.com/DaffaJatmiko/go-task-manager/service"
-	"embed"
-	"fmt"
-	"net/http"
+	"log"
 	"sync"
 	"time"
 
-	_ "embed"
+	"github.com/joho/godotenv"
+	"gorm.io/gorm"
+
+	"embed"
+	"fmt"
+	"net/http"
+
+	"github.com/DaffaJatmiko/go-task-manager/client"
+	"github.com/DaffaJatmiko/go-task-manager/config"
+	"github.com/DaffaJatmiko/go-task-manager/handler/api"
+	"github.com/DaffaJatmiko/go-task-manager/handler/web"
+	"github.com/DaffaJatmiko/go-task-manager/middleware"
+	"github.com/DaffaJatmiko/go-task-manager/migrations" // Import migrations package
+	repo "github.com/DaffaJatmiko/go-task-manager/repository"
+	"github.com/DaffaJatmiko/go-task-manager/service"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
@@ -39,6 +44,18 @@ type ClientHandler struct {
 var Resources embed.FS
 
 func main() {
+	err := godotenv.Load()
+	if err != nil {
+		log.Fatal("Error loading .env file")
+	}
+
+	config.ConnectDB()
+
+	// Jalankan migrasi
+	if err := migrations.Migrate(config.DB); err != nil {
+		log.Fatalf("Failed to run migrations: %v", err)
+	}
+
 	gin.SetMode(gin.ReleaseMode) //release
 
 	wg := sync.WaitGroup{}
@@ -58,14 +75,8 @@ func main() {
 		}))
 		router.Use(gin.Recovery())
 
-		filebasedDb, err := filebased.InitDB()
-
-		if err != nil {
-			panic(err)
-		}
-
-		router = RunServer(router, filebasedDb)
-		router = RunClient(router, Resources, filebasedDb)
+		router = RunServer(router, config.DB)
+		router = RunClient(router, Resources, config.DB)
 
 		fmt.Println("Server is running on port 8080")
 		err = router.Run(":8080")
@@ -78,11 +89,11 @@ func main() {
 	wg.Wait()
 }
 
-func RunServer(gin *gin.Engine, filebasedDb *filebased.Data) *gin.Engine {
-	userRepo := repo.NewUserRepo(filebasedDb)
-	sessionRepo := repo.NewSessionsRepo(filebasedDb)
-	categoryRepo := repo.NewCategoryRepo(filebasedDb)
-	taskRepo := repo.NewTaskRepo(filebasedDb)
+func RunServer(gin *gin.Engine, db *gorm.DB) *gin.Engine {
+	userRepo := repo.NewUserRepo(db)
+	sessionRepo := repo.NewSessionsRepo(db)
+	categoryRepo := repo.NewCategoryRepo(db)
+	taskRepo := repo.NewTaskRepo(db)
 
 	userService := service.NewUserService(userRepo, sessionRepo)
 	categoryService := service.NewCategoryService(categoryRepo)
@@ -106,7 +117,8 @@ func RunServer(gin *gin.Engine, filebasedDb *filebased.Data) *gin.Engine {
 			user.POST("/register", apiHandler.UserAPIHandler.Register)
 
 			user.Use(middleware.Auth())
-			user.GET("/tasks", apiHandler.UserAPIHandler.GetUserTaskCategory)
+			user.GET("/tasks/:id", apiHandler.UserAPIHandler.GetUserTaskCategory)
+			user.POST("/logout", apiHandler.UserAPIHandler.Logout)
 		}
 
 		task := version.Group("/task")
@@ -134,8 +146,8 @@ func RunServer(gin *gin.Engine, filebasedDb *filebased.Data) *gin.Engine {
 	return gin
 }
 
-func RunClient(gin *gin.Engine, embed embed.FS, filebasedDb *filebased.Data) *gin.Engine {
-	sessionRepo := repo.NewSessionsRepo(filebasedDb)
+func RunClient(gin *gin.Engine, embed embed.FS, db *gorm.DB) *gin.Engine {
+	sessionRepo := repo.NewSessionsRepo(db)
 	sessionService := service.NewSessionService(sessionRepo)
 
 	userClient := client.NewUserClient()
@@ -173,7 +185,7 @@ func RunClient(gin *gin.Engine, embed embed.FS, filebasedDb *filebased.Data) *gi
 		main.Use(middleware.Auth())
 		main.GET("/dashboard", client.DashboardWeb.Dashboard)
 		main.GET("/task", client.TaskWeb.TaskPage)
-		user.POST("/task/add/process", client.TaskWeb.TaskAddProcess)
+		main.POST("/task/add/process", client.TaskWeb.TaskAddProcess)
 		main.GET("/category", client.CategoryWeb.Category)
 	}
 

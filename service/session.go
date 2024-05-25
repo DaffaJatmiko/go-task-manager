@@ -13,14 +13,14 @@ type sessionService struct {
 	sessionRepo repo.SessionRepository
 }
 
-func NewSessionService(sessionRepo repo.SessionRepository) *sessionService {
+func NewSessionService(sessionRepo repo.SessionRepository) SessionService {
 	return &sessionService{sessionRepo}
 }
 
-func (c *sessionService) GetSessionByEmail(email string) (model.Session, error) {
-	session, err := c.sessionRepo.SessionAvailEmail(email)
+func (s *sessionService) GetSessionByEmail(email string) (model.Session, error) {
+	session, err := s.sessionRepo.SessionAvailEmail(email)
 	if err != nil {
 		return model.Session{}, err
 	}
-	return session, nil // TODO: replace this
+	return session, nil
 }

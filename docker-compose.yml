@@ -1,0 +1,66 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:13-alpine
+    container_name: postgres-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: jatming
+      POSTGRES_DB: postgres
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - go-task-network
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: go-task-manager
+    environment:
+      PORT: 8080
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: jatming
+      DB_NAME: task_manager
+      DB_SSLMODE: disable
+      DB_TIMEZONE: Asia/Shanghai
+    ports:
+      - '8080:8080'
+    depends_on:
+      - db
+    restart: on-failure
+    networks:
+      - go-task-network
+
+  adminer:
+    image: adminer
+    container_name: adminer
+    ports:
+      - '8081:8080'
+    networks:
+      - go-task-network
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@admin.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - '8082:80'
+    depends_on:
+      - db
+    networks:
+      - go-task-network
+
+networks:
+  go-task-network:
+
+volumes:
+  postgres-data:

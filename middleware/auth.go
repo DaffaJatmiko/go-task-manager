@@ -1,8 +1,9 @@
 package middleware
 
 import (
-	"github.com/DaffaJatmiko/go-task-manager/model"
 	"net/http"
+
+	"github.com/DaffaJatmiko/go-task-manager/model"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt"
@@ -18,8 +19,12 @@ func Auth() gin.HandlerFunc {
 				ctx.Abort()
 				return 
 			}
+			// Tampilkan respons 401 Unauthorized
+			ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Unauthorized"})
+			ctx.AbortWithStatus(http.StatusUnauthorized)
+
 			ctx.Redirect(http.StatusSeeOther, "/login")
-			return 
+			return
 		}
 
 		claims := &model.Claims{}

@@ -6,14 +6,15 @@ import (
 
 	"github.com/DaffaJatmiko/go-task-manager/model"
 	repo "github.com/DaffaJatmiko/go-task-manager/repository"
-
 	"github.com/golang-jwt/jwt"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type UserService interface {
 	Register(user *model.User) (model.User, error)
 	Login(user *model.User) (token *string, err error)
-	GetUserTaskCategory() ([]model.UserTaskCategory, error)
+	Logout(email string) error
+	GetUserTaskCategory(userID uint) ([]model.UserTaskCategory, error)
 }
 
 type userService struct {
@@ -26,20 +27,24 @@ func NewUserService(userRepository repo.UserRepository, sessionsRepo repo.Sessio
 }
 
 func (s *userService) Register(user *model.User) (model.User, error) {
-	dbUser, err := s.userRepo.GetUserByEmail(user.Email)
+	// Check if user already exists
+	_, err := s.userRepo.GetUserByEmail(user.Email)
+	if err == nil {
+		return model.User{}, errors.New("email already exists")
+	}
+
+	// Hash password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
 	if err != nil {
-		return *user, err
+		return model.User{}, err
 	}
-
-	if dbUser.Email != "" || dbUser.ID != 0 {
-		return *user, errors.New("email already exists")
-	}
-
+	user.Password = string(hashedPassword)
 	user.CreatedAt = time.Now()
+	user.UpdatedAt = time.Now()
 
 	newUser, err := s.userRepo.CreateUser(*user)
 	if err != nil {
-		return *user, err
+		return model.User{}, err
 	}
 
 	return newUser, nil
@@ -48,14 +53,10 @@ func (s *userService) Register(user *model.User) (model.User, error) {
 func (s *userService) Login(user *model.User) (token *string, err error) {
 	dbUser, err := s.userRepo.GetUserByEmail(user.Email)
 	if err != nil {
-		return nil, err
-	}
-
-	if dbUser.Email == "" || dbUser.ID == 0 {
 		return nil, errors.New("user not found")
 	}
 
-	if user.Password != dbUser.Password {
+	if err := bcrypt.CompareHashAndPassword([]byte(dbUser.Password), []byte(user.Password)); err != nil {
 		return nil, errors.New("wrong email or password")
 	}
 
@@ -79,8 +80,8 @@ func (s *userService) Login(user *model.User) (token *string, err error) {
 		Expiry: expirationTime,
 	}
 
-	_, err = s.sessionsRepo.SessionAvailEmail(session.Email)
-	if err != nil {
+	existingSession, err := s.sessionsRepo.SessionAvailEmail(session.Email)
+	if err != nil || existingSession.Email == "" {
 		s.sessionsRepo.AddSessions(session)
 	} else {
 		s.sessionsRepo.UpdateSessions(session)
@@ -89,10 +90,14 @@ func (s *userService) Login(user *model.User) (token *string, err error) {
 	return &tokenString, nil
 }
 
-func (s *userService) GetUserTaskCategory() ([]model.UserTaskCategory, error) {
-	taskByCategory, err := s.userRepo.GetUserTaskCategory()
+func (s *userService) Logout(email string) error {
+	return s.sessionsRepo.DeleteSession(email)
+}
+
+func (s *userService) GetUserTaskCategory(userID uint) ([]model.UserTaskCategory, error) {
+	taskByCategory, err := s.userRepo.GetUserTaskCategory(userID)
 	if err != nil {
 		return nil, err
 	}
-	return taskByCategory, nil // TODO: replace this
+	return taskByCategory, nil
 }

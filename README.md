@@ -1,39 +1,79 @@
-# Task Manager Project
+# Go Rest Task Manager
 
-This project is a task management system developed using Golang for the backend and HTML/CSS for the frontend. It allows users to register, log in, create tasks, assign tasks to users, and track task progress.
+## Project Description
 
-<!-- ## Preview
+Go Task Manager is a comprehensive task management application developed using the Go programming language. This application empowers users to efficiently organize their tasks by providing features for task and category management. Additionally, it includes user management utilities for user registration, login, logout, and fetching tasks by user id.
 
-### Halaman Utama
+## Tech Stack
 
-![Halaman Utama](images/homepage.png)
+- **Programming Language**: Go (Golang)
+- **Database**: PostgreSQL
+- **ORM**: Gorm
+- **API Framework**: Gin
+- **Containerization**: Docker
+- **Authentication**: JSON Web Token (JWT)
+- **Testing**: Ginkgo
 
-### Halaman Login
+## Features
 
-![Halaman Login](images/loginpage.png)
+- **User Management**: Utility features for user management, including registration, login, and logout.
+- **Task Management**: CRUD operations for tasks, including creation, retrieval, updating, and deletion.
+- **Category Management**: CRUD operations for categories to organize tasks effectively.
+- **Authentication**: JWT-based authentication for API security.
+- **Input Validation**: Validation of user input data.
+- **API Documentation**: Includes a Postman Collection for easy testing and interaction with the API endpoints.
+- **Testing**: Comprehensive unit testing using Ginkgo to ensure the reliability and correctness of the API endpoints.
 
-### Halaman Registrasi
+## How to Run the Program
 
-![Halaman Registrasi](images/registerpage.png)
+### Prerequisites
 
-### Halaman Dashboard
+Ensure you have installed:
 
-![Halaman Dashboard](images/dashboard.png)
+- [Docker](https://www.docker.com/products/docker-desktop)
+- [Docker Compose](https://docs.docker.com/compose/install/)
+- [Go](https://golang.org/dl/)
+- [Ginkgo](https://github.com/onsi/ginkgo) (Ginkgo is required for running unit tests.)
 
-### Halaman Task
+### Steps
 
-![Halaman Task](images/taskpage.png) -->
+1. **Clone Repository**
 
-## How to Run the Project
+```bash
+git clone https://github.com/username/go-task-manager.git
+cd go-task-manager
+```
 
-1. Make sure you have Golanginstalled on your computer.
-2. Clone this repository to your computer.
-3. Open a terminal and navigate to the project directory.
-4. Run the command `go run main.go` to start the backend server.
-5. Open a web browser and go to `http://localhost:8080` to view the homepage.
+2. **Build and Run Docker Containers**
 
-## Contributions
+```bash
+docker-compose up --build
+```
 
-We welcome contributions! Please feel free to create a pull request if you would like to contribute to this project.
+3. **Accessing the API**
 
-Thank you for your contributions!
+The application will run at http://localhost:8080. You can access the application through your web browser or postman.
+
+4. **Manaing the Database**
+
+To manage the PostgreSQL database used in this project, you can utilize pgAdmin, a web-based PostgreSQL administration tool. Follow these steps to access and manage the database:
+
+1. Open a web browser and go to http://localhost:8082.
+2. Log in with the following credentials:
+   - Email: admin@admin.com
+   - Password: admin
+3. Once logged in, you can register a PostgreSQL server with details matching your Docker container configuration.
+4. Access the database and its tables to view, insert, update, or delete data as needed.
+
+## Testing
+
+This project includes comprehensive unit testing to ensure the reliability and correctness of the API endpoints. To run the tests using Ginkgo, follow these steps:
+
+1. Navigate to the service folder in your terminal.
+2. Run the following command to execute the tests:
+
+```bash
+go test
+/ or ginkgo
+
+```

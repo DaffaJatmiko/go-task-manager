@@ -1,8 +1,8 @@
 package repository
 
 import (
-	"github.com/DaffaJatmiko/go-task-manager/db/filebased"
 	"github.com/DaffaJatmiko/go-task-manager/model"
+	"gorm.io/gorm"
 )
 
 type TaskRepository interface {
@@ -15,57 +15,49 @@ type TaskRepository interface {
 }
 
 type taskRepository struct {
-	filebased *filebased.Data
+	db *gorm.DB
 }
 
-func NewTaskRepo(filebasedDb *filebased.Data) *taskRepository {
-	return &taskRepository{
-		filebased: filebasedDb,
-	}
+func NewTaskRepo(db *gorm.DB) TaskRepository {
+	return &taskRepository{db}
 }
 
 func (t *taskRepository) Store(task *model.Task) error {
-	t.filebased.StoreTask(*task)
-
-	return nil
+	return t.db.Create(task).Error
 }
 
 func (t *taskRepository) Update(taskID int, task *model.Task) error {
-	err := t.filebased.UpdateTask(taskID, *task)
-	if err != nil {
-		return err
-	}
-	return nil // TODO: replace this
+	return t.db.Model(&model.Task{}).Where("id = ?", taskID).Updates(task).Error
 }
 
 func (t *taskRepository) Delete(id int) error {
-	err := t.filebased.DeleteTask(id)
-	if err != nil {
-		return err
-	}
-	return nil // TODO: replace this
+	return t.db.Delete(&model.Task{}, id).Error
 }
 
 func (t *taskRepository) GetByID(id int) (*model.Task, error) {
-	task, err := t.filebased.GetTaskByID(id)
-	if err != nil {
+	var task model.Task
+	if err := t.db.First(&task, id).Error; err != nil {
 		return nil, err
 	}
-	return task, nil // TODO: replace this
+	return &task, nil
 }
 
 func (t *taskRepository) GetList() ([]model.Task, error) {
-	taskList, err := t.filebased.GetTasks()
-	if err != nil {
+	var tasks []model.Task
+	if err := t.db.Find(&tasks).Error; err != nil {
 		return nil, err
 	}
-	return taskList, nil // TODO: replace this
+	return tasks, nil
 }
 
 func (t *taskRepository) GetTaskCategory(id int) ([]model.TaskCategory, error) {
-	taskByCategory, err := t.filebased.GetTaskListByCategory(id)
-	if err != nil {
+	var taskCategories []model.TaskCategory
+	if err := t.db.Table("tasks").
+		Select("tasks.id, tasks.title, categories.name as category").
+		Joins("left join categories on tasks.category_id = categories.id").
+		Where("tasks.category_id = ?", id).
+		Scan(&taskCategories).Error; err != nil {
 		return nil, err
 	}
-	return taskByCategory, nil // TODO: replace this
+	return taskCategories, nil
 }

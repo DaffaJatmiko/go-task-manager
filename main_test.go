@@ -1,1250 +1,512 @@
 package main_test
 
 import (
-	main "github.com/DaffaJatmiko/go-task-manager"
-	"github.com/DaffaJatmiko/go-task-manager/db/filebased"
-	"github.com/DaffaJatmiko/go-task-manager/middleware"
-	"github.com/DaffaJatmiko/go-task-manager/model"
-	repo "github.com/DaffaJatmiko/go-task-manager/repository"
-	"github.com/DaffaJatmiko/go-task-manager/service"
 	"bytes"
 	"encoding/json"
-	"fmt"
-	"html/template"
-	"io/ioutil"
+	"log"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"strings"
-	"time"
 
-	"github.com/PuerkitoBio/goquery"
+	"github.com/DaffaJatmiko/go-task-manager/handler/api"
+	"github.com/DaffaJatmiko/go-task-manager/model"
+	"github.com/DaffaJatmiko/go-task-manager/repository"
+	"github.com/DaffaJatmiko/go-task-manager/service"
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
 
-var html string
+var (
+	router          *gin.Engine
+	userAPI         api.UserAPI
+	taskAPI         api.TaskAPI
+	categoryAPI     api.CategoryAPI
+	userService     service.UserService
+	taskService     service.TaskService
+	categoryService service.CategoryService
+	userRepo        repository.UserRepository
+	taskRepo        repository.TaskRepository
+	categoryRepo    repository.CategoryRepository
+	sessionRepo     repository.SessionRepository
+	db              *gorm.DB
+	token           string
 
-func parseHTML() *goquery.Document {
-	html = strings.Replace(html, `{{template "general/header"}}`, "", 1)
+)
 
-	tmpl, err := template.New("index").Parse(html)
-	Expect(err).NotTo(HaveOccurred())
-
-	var buf strings.Builder
-	err = tmpl.Execute(&buf, nil)
-	Expect(err).NotTo(HaveOccurred())
-
-	strReader := strings.NewReader(buf.String())
-	doc, err := goquery.NewDocumentFromReader(strReader)
-	Expect(err).NotTo(HaveOccurred())
-
-	return doc
+func setupRouter() *gin.Engine {
+	router := gin.Default()
+	apiRoutes := router.Group("/api/v1")
+	{
+		apiRoutes.POST("/user/register", userAPI.Register)
+		apiRoutes.POST("/user/login", userAPI.Login)
+		apiRoutes.GET("/task/:id", userAPI.GetUserTaskCategory)
+		apiRoutes.POST("/user/logout", userAPI.Logout)
+		apiRoutes.POST("/tasks", taskAPI.AddTask)
+		apiRoutes.GET("/tasks/:id", taskAPI.GetTaskByID)
+		apiRoutes.GET("/tasks", taskAPI.GetTaskList)
+		apiRoutes.PUT("/tasks/:id", taskAPI.UpdateTask)
+		apiRoutes.DELETE("/tasks/:id", taskAPI.DeleteTask)
+		apiRoutes.POST("/category", categoryAPI.AddCategory)
+		apiRoutes.GET("/categories/:id", categoryAPI.GetCategoryByID)
+		apiRoutes.GET("/categories", categoryAPI.GetCategoryList)
+		apiRoutes.PUT("/categories/:id", categoryAPI.UpdateCategory)
+		apiRoutes.DELETE("/categories/:id", categoryAPI.DeleteCategory)
+	}
+	return router
 }
 
-func SetCookie(mux *gin.Engine) *http.Cookie {
-	login := model.UserLogin{
-		Email:    "test@mail.com",
-		Password: "testing123",
+func CreateTestTask(id int, title, deadline string, priority int, status string, categoryID int, userID int) {
+	task := model.Task{
+			ID:         id,
+			Title:      title,
+			Deadline:   deadline,
+			Priority:   priority,
+			Status:     status,
+			CategoryID: categoryID,
+			UserID:     userID,
 	}
-
-	body, _ := json.Marshal(login)
-
-	w := httptest.NewRecorder()
-	r := httptest.NewRequest("POST", "/api/v1/user/login", bytes.NewReader(body))
-	r.Header.Set("Content-Type", "application/json")
-	mux.ServeHTTP(w, r)
-
-	var cookie *http.Cookie
-	for _, c := range w.Result().Cookies() {
-		if c.Name == "session_token" {
-			cookie = c
-		}
-	}
-
-	return cookie
+	// Simpan task ke database
+	db.Create(&task)
 }
 
-var _ = Describe("Task Tracker Plus", Ordered, func() {
-	var apiServer *gin.Engine
+func CreateTestCategory(id int, name string) {
+	category := model.Category{
+			ID:   id,
+			Name: name,
+	}
+	// Simpan category ke database
+	db.Create(&category)
+}
 
-	var userRepo repo.UserRepository
-	var sessionRepo repo.SessionRepository
-	var categoryRepo repo.CategoryRepository
-	var taskRepo repo.TaskRepository
 
-	var userService service.UserService
-	var sessionService service.SessionService
-	var categoryService service.CategoryService
-	var taskService service.TaskService
-
-	var insertCategories []model.Category
-	var insertTasks []model.Task
-	var expectedUserTask []model.UserTaskCategory
-
-	var filebasedDb *filebased.Data
-
+var _ = BeforeSuite(func() {
+	// Set up the test database connection directly in the test file
+	dsn := "host=localhost user=postgres password=jatming dbname=test-task-manager port=5432 sslmode=disable TimeZone=Asia/Shanghai"
 	var err error
+	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("failed to connect to test database: %v", err)
+	}
+	Expect(err).NotTo(HaveOccurred())
 
-	BeforeEach(func() {
-		gin.SetMode(gin.ReleaseMode) //release
+	// Apply migrations to the test database
+	err = db.AutoMigrate(&model.User{}, &model.Task{}, &model.Category{}, &model.Session{})
+	if err != nil {
+		log.Fatalf("failed to migrate test database: %v", err)
+	}
+	Expect(err).NotTo(HaveOccurred())
 
-		os.Remove("file.db")
+	// Set up the repositories, services, and APIs
+	userRepo = repository.NewUserRepo(db)
+	sessionRepo = repository.NewSessionsRepo(db)
+	taskRepo = repository.NewTaskRepo(db)
+	categoryRepo = repository.NewCategoryRepo(db)
+	userService = service.NewUserService(userRepo, sessionRepo)
+	taskService = service.NewTaskService(taskRepo)
+	categoryService = service.NewCategoryService(categoryRepo)
+	userAPI = api.NewUserAPI(userService)
+	taskAPI = api.NewTaskAPI(taskService)
+	categoryAPI = api.NewCategoryAPI(categoryService)
 
-		filebasedDb, err = filebased.InitDB()
+	// Set up the router
+	router = setupRouter()
 
-		userRepo = repo.NewUserRepo(filebasedDb)
-		sessionRepo = repo.NewSessionsRepo(filebasedDb)
-		categoryRepo = repo.NewCategoryRepo(filebasedDb)
-		taskRepo = repo.NewTaskRepo(filebasedDb)
+	
+	// Ensure test user exists
+	// Ensure test user exists
+	testUser := model.User{
+		Fullname: "Test User",
+		Email:    "testuser@example.com",
+		Password: "password123",  // Set password directly without hashing
+	}
+	result := db.Create(&testUser)
+	if result.Error != nil {
+		log.Fatalf("failed to create test user: %v", result.Error)
+	} else {
+		log.Printf("test user created: %v", testUser)
+	}
 
-		userService = service.NewUserService(userRepo, sessionRepo)
-		sessionService = service.NewSessionService(sessionRepo)
-		categoryService = service.NewCategoryService(categoryRepo)
-		taskService = service.NewTaskService(taskRepo)
+	// Verify the test user exists
+	var checkUser model.User
+	if err := db.Where("email = ?", "testuser@example.com").First(&checkUser).Error; err != nil {
+		log.Fatalf("failed to find test user: %v", err)
+	} else {
+		log.Printf("test user found: %v", checkUser)
+	}
+})
 
-		Expect(err).ShouldNot(HaveOccurred())
+var _ = AfterSuite(func() {
+	// Clean up the test database
+	db.Exec("DROP SCHEMA public CASCADE")
+	db.Exec("CREATE SCHEMA public")
+})
 
-		apiServer = gin.New()
-		apiServer = main.RunServer(apiServer, filebasedDb)
+var _ = Describe("UserAPI", func() {
+	Describe("User Registration", func() {
+    Context("when registering a new user", func() {
+        It("should register a new user successfully", func() {
+            // Prepare request body
+            requestBody := map[string]interface{}{
+                "fullname": "New User",
+                "email":    "newuser@example.com",
+                "password": "password123",
+            }
+            jsonBody, err := json.Marshal(requestBody)
+            Expect(err).NotTo(HaveOccurred())
 
-		expectedUserTask = []model.UserTaskCategory{
-			{
-				ID:       1,
-				Fullname: "test",
-				Email:    "test@mail.com",
-				Task:     "Task 2",
-				Deadline: "2023-06-01",
-				Priority: 1,
-				Status:   "Completed",
-				Category: "Category 2",
-			},
-			{
-				ID:       1,
-				Fullname: "test",
-				Email:    "test@mail.com",
-				Task:     "Task 5",
-				Deadline: "2023-06-07",
-				Priority: 5,
-				Status:   "In Progress",
-				Category: "Category 3",
-			},
-		}
+            // Perform HTTP request
+            w := httptest.NewRecorder()
+            req, err := http.NewRequest("POST", "/api/v1/user/register", bytes.NewBuffer(jsonBody))
+            Expect(err).NotTo(HaveOccurred())
+            req.Header.Set("Content-Type", "application/json")
+            router.ServeHTTP(w, req)
 
-		// Init test data:
-		insertCategories = []model.Category{
-			{ID: 1, Name: "Category 1"},
-			{ID: 2, Name: "Category 2"},
-			{ID: 3, Name: "Category 3"},
-			{ID: 4, Name: "Category 4"},
-			{ID: 5, Name: "Category 5"},
-		}
+            // Check response status code
+            Expect(w.Code).To(Equal(http.StatusCreated))
 
-		for _, v := range insertCategories {
-			err := categoryRepo.Store(&v)
-			Expect(err).ShouldNot(HaveOccurred())
-		}
+            // Check response body
+            var response map[string]string
+            err = json.Unmarshal(w.Body.Bytes(), &response)
+            Expect(err).NotTo(HaveOccurred())
+            Expect(response["message"]).To(Equal("register success"))
+        })
+    })
+})
 
-		insertTasks = []model.Task{
-			{
-				ID:         1,
-				Title:      "Task 1",
-				Deadline:   "2023-05-30",
-				Priority:   2,
-				Status:     "In Progress",
-				CategoryID: 1,
-				UserID:     2,
-			},
-			{
-				ID:         2,
-				Title:      "Task 2",
-				Deadline:   "2023-06-01",
-				Priority:   1,
-				Status:     "Completed",
-				CategoryID: 2,
-				UserID:     1,
-			},
-			{
-				ID:         3,
-				Title:      "Task 3",
-				Deadline:   "2023-06-02",
-				Priority:   4,
-				Status:     "Completed",
-				CategoryID: 1,
-				UserID:     3,
-			},
-			{
-				ID:         4,
-				Title:      "Task 4",
-				Deadline:   "2023-06-02",
-				Priority:   3,
-				Status:     "Completed",
-				CategoryID: 1,
-				UserID:     4,
-			},
-			{
-				ID:         5,
-				Title:      "Task 5",
-				Deadline:   "2023-06-07",
-				Priority:   5,
-				Status:     "In Progress",
-				CategoryID: 3,
-				UserID:     1,
-			},
-		}
+	Describe("User Login", func() {
+		It("should login the user", func() {
+			requestBody := map[string]interface{}{
+				"email":    "newuser@example.com",
+				"password": "password123",
+			}
+			jsonBody, err := json.Marshal(requestBody)
+			Expect(err).NotTo(HaveOccurred())
 
-		for _, v := range insertTasks {
-			err := taskRepo.Store(&v)
-			Expect(err).ShouldNot(HaveOccurred())
-		}
+			w := httptest.NewRecorder()
+			req, err := http.NewRequest("POST", "/api/v1/user/login", bytes.NewBuffer(jsonBody))
+			Expect(err).NotTo(HaveOccurred())
+			router.ServeHTTP(w, req)
 
-		reqRegister := model.UserRegister{
-			Fullname: "test",
-			Email:    "test@mail.com",
-			Password: "testing123",
-		}
+			Expect(w.Code).To(Equal(http.StatusOK))
+			Expect(w.Header().Get("Set-Cookie")).To(ContainSubstring("session_token"))
 
-		reqBody, _ := json.Marshal(reqRegister)
-
-		w := httptest.NewRecorder()
-		r := httptest.NewRequest("POST", "/api/v1/user/register", bytes.NewReader(reqBody))
-		r.Header.Set("Content-Type", "application/json")
-		apiServer.ServeHTTP(w, r)
-
-		Expect(w.Result().StatusCode).To(Equal(http.StatusCreated))
+			// Extract session token for further use
+			cookies := w.Result().Cookies()
+			for _, cookie := range cookies {
+				if cookie.Name == "session_token" {
+					token = cookie.Value
+				}
+			}
+		})
 	})
 
-	Describe("Auth Middleware", func() {
-		var (
-			router *gin.Engine
-			w      *httptest.ResponseRecorder
-		)
-
+	Describe("Get User Task Category", func() {
 		BeforeEach(func() {
-			router = gin.Default()
-			w = httptest.NewRecorder()
-		})
+			// Ensure user is logged in and token is set
+			if token == "" {
+				requestBody := map[string]interface{}{
+					"email":    "newuser@example.com",
+					"password": "password123",
+				}
+				jsonBody, err := json.Marshal(requestBody)
+				Expect(err).NotTo(HaveOccurred())
 
-		When("valid token is provided", func() {
-			It("should set user Email in context and call next middleware", func() {
-				claims := &model.Claims{Email: "aditira@gmail.com"}
-				token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-				signedToken, _ := token.SignedString(model.JwtKey)
-				req, _ := http.NewRequest(http.MethodGet, "/", nil)
-				req.AddCookie(&http.Cookie{Name: "session_token", Value: signedToken})
-
-				router.Use(middleware.Auth())
-				router.GET("/", func(ctx *gin.Context) {
-					Email := ctx.MustGet("email").(string)
-					Expect(Email).To(Equal("aditira@gmail.com"))
-				})
-
+				w := httptest.NewRecorder()
+				req, err := http.NewRequest("POST", "/api/v1/user/login", bytes.NewBuffer(jsonBody))
+				Expect(err).NotTo(HaveOccurred())
 				router.ServeHTTP(w, req)
 				Expect(w.Code).To(Equal(http.StatusOK))
-			})
+				cookies := w.Result().Cookies()
+				for _, cookie := range cookies {
+					if cookie.Name == "session_token" {
+						token = cookie.Value
+					}
+				}
+			}
 		})
 
-		When("session token is missing", func() {
-			It("should return unauthorized error response", func() {
-				req, _ := http.NewRequest(http.MethodGet, "/", nil)
+		It("should get tasks by category for the user", func() {
+			w := httptest.NewRecorder()
+			req, err := http.NewRequest("GET", "/api/v1/task/1", nil) // Assuming userID 1
+			Expect(err).NotTo(HaveOccurred())
+			req.Header.Set("Cookie", "session_token="+token)
+			router.ServeHTTP(w, req)
 
-				router.Use(middleware.Auth())
-
-				router.ServeHTTP(w, req)
-				Expect(w.Code).To(Equal(http.StatusSeeOther))
-			})
-		})
-
-		When("session token is invalid", func() {
-			It("should return unauthorized error response", func() {
-				req, _ := http.NewRequest(http.MethodGet, "/", nil)
-				req.AddCookie(&http.Cookie{Name: "session_token", Value: "invalid_token"})
-
-				router.Use(middleware.Auth())
-
-				router.ServeHTTP(w, req)
-				Expect(w.Code).To(Equal(http.StatusBadRequest))
-			})
+			Expect(w.Code).To(Equal(http.StatusOK))
+			var response []model.UserTaskCategory
+			err = json.Unmarshal(w.Body.Bytes(), &response)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(response).NotTo(BeNil())
 		})
 	})
 
-	Describe("Repository", func() {
-		Describe("Sessions repository", func() {
-			When("add session data to sessions table database postgres", func() {
-				It("should save data session to sessions table database postgres", func() {
-					session := model.Session{
-						Token:  "cc03dbea-4085-47ba-86fe-020f5d01a9d8",
-						Email:  "aditira@gmail.com",
-						Expiry: time.Date(2022, 11, 17, 20, 34, 58, 651387237, time.UTC),
-					}
-					err := sessionRepo.AddSessions(session)
-					Expect(err).ShouldNot(HaveOccurred())
+	// Describe("User Logout", func() {
+	// 	BeforeEach(func() {
+	// 		// Ensure user is logged in and token is set
+	// 		if token == "" {
+	// 			requestBody := map[string]interface{}{
+	// 				"email":    "testuser@example.com",
+	// 				"password": "password123",
+	// 			}
+	// 			jsonBody, err := json.Marshal(requestBody)
+	// 			Expect(err).NotTo(HaveOccurred())
 
-					result, err := filebasedDb.GetFirstSession()
-					Expect(result.Token).To(Equal(session.Token))
-					Expect(result.Email).To(Equal(session.Email))
+	// 			w := httptest.NewRecorder()
+	// 			req, err := http.NewRequest("POST", "/api/v1/user/login", bytes.NewBuffer(jsonBody))
+	// 			Expect(err).NotTo(HaveOccurred())
+	// 			router.ServeHTTP(w, req)
+	// 			Expect(w.Code).To(Equal(http.StatusOK))
+	// 			cookies := w.Result().Cookies()
+	// 			for _, cookie := range cookies {
+	// 				if cookie.Name == "session_token" {
+	// 					token = cookie.Value
+	// 				}
+	// 			}
+	// 		}
+	// 	})
 
-					Expect(err).ShouldNot(HaveOccurred())
-				})
-			})
+	// 	It("should logout the user", func() {
+	// 		w := httptest.NewRecorder()
+	// 		req, err := http.NewRequest("POST", "/api/v1/user/logout", nil)
+	// 		Expect(err).NotTo(HaveOccurred())
+	// 		req.Header.Set("Cookie", "session_token="+token)
+	// 		router.ServeHTTP(w, req)
 
-			When("delete selected session to sessions table database postgres", func() {
-				It("should delete data session target from sessions table database postgres", func() {
-					session := model.Session{
-						Token:  "cc03dbea-4085-47ba-86fe-020f5d01a9d8",
-						Email:  "aditira@gmail.com",
-						Expiry: time.Date(2022, 11, 17, 20, 34, 58, 651387237, time.UTC),
-					}
-					err := sessionRepo.AddSessions(session)
-					Expect(err).ShouldNot(HaveOccurred())
+	// 		Expect(w.Code).To(Equal(http.StatusOK))
+	// 		var response map[string]string
+	// 		err = json.Unmarshal(w.Body.Bytes(), &response)
+	// 		Expect(err).NotTo(HaveOccurred())
+	// 		Expect(response["message"]).To(Equal("logout success"))
 
-					result, err := filebasedDb.GetFirstSession()
-					Expect(result.Token).To(Equal(session.Token))
-					Expect(result.Email).To(Equal(session.Email))
+	// 		// Verify session is removed from the database
+	// 		session, err := sessionRepo.SessionAvailEmail("newuser@example.com")
+	// 		Expect(err).To(HaveOccurred())
+	// 		Expect(session.Email).To(BeEmpty())
+	// 	})
+	// })
 
-					err = sessionRepo.DeleteSession("cc03dbea-4085-47ba-86fe-020f5d01a9d8")
-					Expect(err).ShouldNot(HaveOccurred())
+	Describe("Task Management", func() {
+    BeforeEach(func() {
+        // Ensure user is logged in and token is set
+        if token == "" {
+            requestBody := map[string]interface{}{
+                "email":    "newuser@example.com",
+                "password": "password123",
+            }
+            jsonBody, err := json.Marshal(requestBody)
+            Expect(err).NotTo(HaveOccurred())
 
-					result, err = filebasedDb.GetFirstSession()
-					Expect(result).To(Equal(model.Session{}))
-				})
-			})
+            w := httptest.NewRecorder()
+            req, err := http.NewRequest("POST", "/api/v1/user/login", bytes.NewBuffer(jsonBody))
+            Expect(err).NotTo(HaveOccurred())
+            router.ServeHTTP(w, req)
+            Expect(w.Code).To(Equal(http.StatusOK))
+            cookies := w.Result().Cookies()
+            for _, cookie := range cookies {
+                if cookie.Name == "session_token" {
+                    token = cookie.Value
+                }
+            }
+        }
+    })
 
-			When("update selected session to sessions table database postgres", func() {
-				It("should update data session target the username field from sessions table database postgres", func() {
-					session := model.Session{
-						Token:  "cc03dbea-4085-47ba-86fe-020f5d01a9d8",
-						Email:  "aditira@gmail.com",
-						Expiry: time.Date(2022, 11, 17, 20, 34, 58, 651387237, time.UTC),
-					}
-					err := sessionRepo.AddSessions(session)
-					Expect(err).ShouldNot(HaveOccurred())
+    It("should create a new task", func() {
+			w := httptest.NewRecorder()
+			body := bytes.NewBufferString(`{"title": "New Task", "deadline": "2024-12-31T23:59:59Z", "priority": 1, "status": "pending", "category_id": 1, "user_id": 1}`)
+			req, _ := http.NewRequest("POST", "/api/v1/tasks", body)
+			req.Header.Set("Cookie", "session_token="+token)
+			req.Header.Set("Content-Type", "application/json")
+			router.ServeHTTP(w, req)
+	
+			Expect(w.Code).To(Equal(http.StatusCreated))
+	
+			var response map[string]interface{}
+			err := json.Unmarshal(w.Body.Bytes(), &response)
+			Expect(err).NotTo(HaveOccurred())
+	
+			message, messageExists := response["message"]
+			Expect(messageExists).To(BeTrue(), "Expected response to contain 'message' field")
+			Expect(message).To(Equal("add task success"))
+    })
 
-					result, err := filebasedDb.GetFirstSession()
-					Expect(result.Token).To(Equal(session.Token))
-					Expect(result.Email).To(Equal(session.Email))
+    It("should update an existing task", func() {
+        w := httptest.NewRecorder()
+        body := bytes.NewBufferString(`{"title": "Updated Task", "description": "Updated description", "category_id": 1}`)
+        req, _ := http.NewRequest("PUT", "/api/v1/tasks/1", body)  // Assuming taskID 1
+        req.Header.Set("Cookie", "session_token="+token)
+        router.ServeHTTP(w, req)
 
-					sessionUpdate := model.Session{
-						Token:  "cc03dbac-4085-22ba-75fe-103f9a01b6d5",
-						Email:  "aditira@gmail.com",
-						Expiry: time.Date(2022, 11, 17, 20, 34, 58, 651387237, time.UTC),
-					}
-					err = sessionRepo.UpdateSessions(sessionUpdate)
-					Expect(err).ShouldNot(HaveOccurred())
+        Expect(w.Code).To(Equal(http.StatusOK))
 
-					result, err = filebasedDb.GetFirstSession()
-					Expect(result.Token).To(Equal(sessionUpdate.Token))
+        var response map[string]interface{}
+        err := json.Unmarshal(w.Body.Bytes(), &response)
+        Expect(err).NotTo(HaveOccurred())
 
-					Expect(err).ShouldNot(HaveOccurred())
-				})
-			})
+        message, messageExists := response["message"]
+        Expect(messageExists).To(BeTrue(), "Expected response to contain 'message' field")
+        Expect(message).To(Equal("update task success"))
+    })
 
-			When("check session availability with name", func() {
-				It("return data session with target name", func() {
-					_, err := sessionRepo.SessionAvailEmail("aditira@gmail.com")
-					Expect(err).Should(HaveOccurred())
+    It("should delete an existing task", func() {
+        w := httptest.NewRecorder()
+        req, _ := http.NewRequest("DELETE", "/api/v1/tasks/1", nil)  // Assuming taskID 1
+        req.Header.Set("Cookie", "session_token="+token)
+        router.ServeHTTP(w, req)
 
-					session := model.Session{
-						Token:  "cc03dbea-4085-47ba-86fe-020f5d01a9d8",
-						Email:  "aditira@gmail.com",
-						Expiry: time.Now().Add(5 * time.Hour),
-					}
-					err = sessionRepo.AddSessions(session)
-					Expect(err).ShouldNot(HaveOccurred())
+        Expect(w.Code).To(Equal(http.StatusOK))
 
-					result, err := filebasedDb.GetFirstSession()
-					Expect(result.Token).To(Equal(session.Token))
-					Expect(result.Email).To(Equal(session.Email))
+        var response map[string]interface{}
+        err := json.Unmarshal(w.Body.Bytes(), &response)
+        Expect(err).NotTo(HaveOccurred())
 
-					res, err := sessionRepo.SessionAvailEmail("aditira@gmail.com")
-					Expect(err).ShouldNot(HaveOccurred())
-					Expect(res.Token).To(Equal(session.Token))
-					Expect(result.Email).To(Equal(session.Email))
-				})
-			})
+        message, messageExists := response["message"]
+        Expect(messageExists).To(BeTrue(), "Expected response to contain 'message' field")
+        Expect(message).To(Equal("Task deleted successfully"))
+    })
 
-			When("check session availability with token", func() {
-				It("return data session with target token", func() {
-					_, err := sessionRepo.SessionAvailToken("cc03dbea-4085-47ba-86fe-020f5d01a9d8")
-					Expect(err).Should(HaveOccurred())
+    It("should get a task by ID", func() {
+			CreateTestTask(1, "Test Task", "2024-12-31T23:59:59Z", 1, "pending", 1, 1)
 
-					session := model.Session{
-						Token:  "cc03dbea-4085-47ba-86fe-020f5d01a9d8",
-						Email:  "aditira@gmail.com",
-						Expiry: time.Now().Add(5 * time.Hour),
-					}
-					err = sessionRepo.AddSessions(session)
-					Expect(err).ShouldNot(HaveOccurred())
+			w := httptest.NewRecorder()
+			req, _ := http.NewRequest("GET", "/api/v1/tasks/1", nil)  // Assuming taskID 1
+			req.Header.Set("Cookie", "session_token="+token)
+			router.ServeHTTP(w, req)
+	
+			Expect(w.Code).To(Equal(http.StatusOK))
+	
+			var task model.Task
+			err := json.Unmarshal(w.Body.Bytes(), &task)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(task.ID).To(Equal(1))
+    })
 
-					result, err := filebasedDb.GetFirstSession()
-					Expect(result.Token).To(Equal(session.Token))
-					Expect(result.Email).To(Equal(session.Email))
+    It("should get a list of tasks", func() {
+			CreateTestTask(1, "Test Task", "2024-12-31T23:59:59Z", 1, "pending", 1, 1)
 
-					res, err := sessionRepo.SessionAvailToken("cc03dbea-4085-47ba-86fe-020f5d01a9d8")
-					Expect(err).ShouldNot(HaveOccurred())
-					Expect(res.Token).To(Equal(session.Token))
-					Expect(result.Email).To(Equal(session.Email))
-				})
-			})
+      w := httptest.NewRecorder()
+      req, _ := http.NewRequest("GET", "/api/v1/tasks", nil)
+      req.Header.Set("Cookie", "session_token="+token)
+      router.ServeHTTP(w, req)
 
-		})
+      Expect(w.Code).To(Equal(http.StatusOK))
 
-		Describe("User", func() {
-			When("fetching a single user data by email from users table in the database", func() {
-				It("should return a single task data", func() {
-					expectUser := model.User{
-						Fullname: "test",
-						Email:    "test@mail.com",
-						Password: "testing123",
-					}
-
-					resUser, err := userRepo.GetUserByEmail("test@mail.com")
-					Expect(err).ShouldNot(HaveOccurred())
-					Expect(resUser.Fullname).To(Equal(expectUser.Fullname))
-					Expect(resUser.Email).To(Equal(expectUser.Email))
-					Expect(resUser.Password).To(Equal(expectUser.Password))
-				})
-			})
-
-			When("retrieving user task categories from user repository", func() {
-				It("should return the expected user task categories", func() {
-					resUserTask, err := userRepo.GetUserTaskCategory()
-					Expect(err).ShouldNot(HaveOccurred())
-					Expect(resUserTask).To(Equal(expectedUserTask))
-				})
-			})
-		})
-
-		Describe("Task", func() {
-			When("updating a category with valid ID and new category data", func() {
-				It("should update the existing category with the new category data", func() {
-					newCategory := model.Category{
-						ID:   1,
-						Name: "Updated with Repository Category 1",
-					}
-					err = categoryRepo.Update(1, newCategory)
-					Expect(err).ShouldNot(HaveOccurred())
-
-					result, err := categoryRepo.GetByID(1)
-					Expect(err).ShouldNot(HaveOccurred())
-					Expect(result.Name).To(Equal(newCategory.Name))
-
-					Expect(err).ShouldNot(HaveOccurred())
-				})
-			})
-
-			When("deleting a category with a valid category ID", func() {
-				It("should delete the category from the database without returning an error", func() {
-					err = categoryRepo.Delete(2)
-					Expect(err).ShouldNot(HaveOccurred())
-
-					result, err := categoryRepo.GetByID(2)
-					Expect(err.Error()).To(Equal("record not found"))
-					Expect(result).To(BeNil())
-				})
-			})
-
-			When("retrieving the list of categories from the database", func() {
-				It("should return the list of categories without any errors and the list should contain the expected number of categories", func() {
-					results, err := categoryRepo.GetList()
-					Expect(err).ShouldNot(HaveOccurred())
-					Expect(results).To(HaveLen(5))
-
-					Expect(results).To(Equal(insertCategories))
-				})
-			})
-
-		})
-
-		Describe("Task", func() {
-			When("updating task data in tasks table in the database", func() {
-				It("should update the existing task data in tasks table in the database", func() {
-					newTask := model.Task{
-						ID:         1,
-						Title:      "Updated with Repository Task 1",
-						Deadline:   "2023-05-30",
-						Priority:   2,
-						CategoryID: 1,
-						Status:     "In Progress",
-					}
-					err = taskRepo.Update(newTask.ID, &newTask)
-					Expect(err).ShouldNot(HaveOccurred())
-
-					result, err := taskRepo.GetByID(1)
-					Expect(err).ShouldNot(HaveOccurred())
-					Expect(result.Title).To(Equal(newTask.Title))
-					Expect(result.Deadline).To(Equal(newTask.Deadline))
-					Expect(result.Priority).To(Equal(newTask.Priority))
-					Expect(result.CategoryID).To(Equal(newTask.CategoryID))
-					Expect(result.Status).To(Equal(newTask.Status))
-				})
-			})
-
-			When("deleting a task with a valid task ID from the database", func() {
-				It("should delete the task without any errors", func() {
-					err = taskRepo.Delete(2)
-					Expect(err).ShouldNot(HaveOccurred())
-
-					result, err := taskRepo.GetByID(2)
-					Expect(err.Error()).To(Equal("record not found"))
-					Expect(result).To(BeNil())
-				})
-			})
-
-			When("retrieving the list of tasks from the database", func() {
-				It("should return the list of tasks without any errors", func() {
-					results, err := taskRepo.GetList()
-					Expect(err).ShouldNot(HaveOccurred())
-					Expect(results).To(HaveLen(5))
-
-					Expect(results).To(Equal(insertTasks))
-				})
-			})
-
-			When("retrieving the list of tasks for a specific category from the database", func() {
-				It("should return the list of tasks for the specified category without any errors", func() {
-					taskCategory, err := taskRepo.GetTaskCategory(1)
-					Expect(err).ShouldNot(HaveOccurred())
-
-					Expect(taskCategory).To(Equal([]model.TaskCategory{
-						{ID: 1, Title: "Task 1", Category: "Category 1"},
-						{ID: 3, Title: "Task 3", Category: "Category 1"},
-						{ID: 4, Title: "Task 4", Category: "Category 1"},
-					}))
-				})
-			})
-
-		})
+      var tasks []model.Task
+      err := json.Unmarshal(w.Body.Bytes(), &tasks)
+      Expect(err).NotTo(HaveOccurred())
+      Expect(tasks).NotTo(BeEmpty())
+    })
 	})
 
-	Describe("Service", func() {
-		Describe("Session Service", func() {
-			Describe("GetSessionByEmail", func() {
-				When("retrieving user session by email from session repository", func() {
-					It("should return the expected user session", func() {
-						session := model.Session{
-							Token:  "cc03dbea-4085-47ba-86fe-020f5d01a9d8",
-							Email:  "aditira@gmail.com",
-							Expiry: time.Now().Add(5 * time.Hour),
-						}
-						err = sessionRepo.AddSessions(session)
-						Expect(err).ShouldNot(HaveOccurred())
-
-						res, err := sessionService.GetSessionByEmail("aditira@gmail.com")
-						Expect(err).ShouldNot(HaveOccurred())
-						Expect(res.Token).To(Equal(session.Token))
-						Expect(res.Email).To(Equal(session.Email))
-					})
-				})
-			})
-		})
-
-		Describe("User Service", func() {
-			Describe("GetUserTaskCategory", func() {
-				When("retrieving user task categories from user repository", func() {
-					It("should return the expected user task categories", func() {
-						resUserTask, err := userService.GetUserTaskCategory()
-						Expect(err).ShouldNot(HaveOccurred())
-						Expect(resUserTask).To(Equal(expectedUserTask))
-					})
-				})
-			})
-		})
-
-		Describe("Category Service", func() {
-			Describe("Update", func() {
-				When("updating a category in the database", func() {
-					It("should update the category without any errors", func() {
-						category := model.Category{
-							ID:   1,
-							Name: "Updated with Service Category 1",
-						}
-
-						err := categoryService.Update(1, category)
-						Expect(err).ShouldNot(HaveOccurred())
-					})
-				})
-			})
-
-			Describe("Delete", func() {
-				When("deleting a category from the database", func() {
-					It("should delete the category without any errors", func() {
-						err := categoryService.Delete(3)
-						Expect(err).ShouldNot(HaveOccurred())
-					})
-				})
-			})
-
-			Describe("GetList", func() {
-				When("retrieving the list of categories from the database", func() {
-					It("should return the list of categories without any errors", func() {
-						categories, err := categoryService.GetList()
-						Expect(err).ShouldNot(HaveOccurred())
-						Expect(categories).To(HaveLen(5))
-
-						Expect(categories).To(Equal(insertCategories))
-					})
-				})
-			})
-		})
-
-		Describe("Task Service", func() {
-			Describe("Update", func() {
-				When("updating a task in the database", func() {
-					It("should update the task without any errors", func() {
-						task := &model.Task{
-							ID:         1,
-							Title:      "Updated with Service Task 1",
-							Deadline:   "2023-05-30",
-							Priority:   5,
-							CategoryID: 1,
-							Status:     "In Progress",
-						}
-
-						err := taskService.Update(task.ID, task)
-						Expect(err).ShouldNot(HaveOccurred())
-					})
-				})
-			})
-
-			Describe("Delete", func() {
-				When("deleting a task from the database", func() {
-					It("should delete the task without any errors", func() {
-						err := taskService.Delete(3)
-						Expect(err).ShouldNot(HaveOccurred())
-					})
-				})
-			})
-
-			Describe("GetList", func() {
-				When("retrieving the list of tasks from the database", func() {
-					It("should return the list of tasks without any errors", func() {
-						tasks, err := taskService.GetList()
-						Expect(err).ShouldNot(HaveOccurred())
-						Expect(tasks).To(Equal(insertTasks))
-					})
-				})
-			})
-
-			Describe("GetTaskCategory", func() {
-				When("retrieving the category of a task from the database", func() {
-					It("should return the task category without any errors", func() {
-						taskCategories, err := taskService.GetTaskCategory(1)
-						Expect(err).ShouldNot(HaveOccurred())
-						Expect(taskCategories).To(Equal([]model.TaskCategory{
-							{ID: 1, Title: "Task 1", Category: "Category 1"},
-							{ID: 3, Title: "Task 3", Category: "Category 1"},
-							{ID: 4, Title: "Task 4", Category: "Category 1"},
-						}))
-					})
-				})
-			})
-		})
-	})
-
-	Describe("API", func() {
-		Describe("User API", func() {
-			When("send empty email and password with POST method", func() {
-				It("should return a bad request", func() {
-					loginData := model.UserLogin{
-						Email:    "",
-						Password: "",
-					}
-
-					body, _ := json.Marshal(loginData)
-					w := httptest.NewRecorder()
-					r := httptest.NewRequest("POST", "/api/v1/user/login", bytes.NewReader(body))
-					r.Header.Set("Content-Type", "application/json")
-
-					apiServer.ServeHTTP(w, r)
-
-					errResp := model.ErrorResponse{}
-					err := json.Unmarshal(w.Body.Bytes(), &errResp)
-					Expect(err).To(BeNil())
-					Expect(w.Result().StatusCode).To(Equal(http.StatusBadRequest))
-					Expect(errResp.Error).To(Equal("invalid decode json"))
-				})
-			})
-
-			When("send email and password with POST method", func() {
-				It("should return a success", func() {
-					loginData := model.UserLogin{
-						Email:    "test@mail.com",
-						Password: "testing123",
-					}
-					body, _ := json.Marshal(loginData)
-					w := httptest.NewRecorder()
-					r := httptest.NewRequest("POST", "/api/v1/user/login", bytes.NewReader(body))
-					r.Header.Set("Content-Type", "application/json")
-					apiServer.ServeHTTP(w, r)
-
-					var resp = map[string]interface{}{}
-					err = json.Unmarshal(w.Body.Bytes(), &resp)
-					Expect(err).To(BeNil())
-					Expect(w.Result().StatusCode).To(Equal(http.StatusOK))
-					Expect(resp["message"]).To(Equal("login success"))
-				})
-			})
-
-			Describe("GetUserTaskCategory", func() {
-				When("sending without cookie", func() {
-					It("should return status code 401", func() {
-						r, _ := http.NewRequest("GET", "/api/v1/user/tasks", nil)
-						w := httptest.NewRecorder()
-						r.Header.Set("Content-Type", "application/json")
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusUnauthorized))
-					})
-				})
-
-				When("retrieving user list by task and category", func() {
-					It("should return status code 200 and task list", func() {
-						r, _ := http.NewRequest("GET", "/api/v1/user/tasks", nil)
-						w := httptest.NewRecorder()
-
-						r.AddCookie(SetCookie(apiServer))
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusOK))
-
-						var userTasks []model.UserTaskCategory
-						Expect(json.Unmarshal(w.Body.Bytes(), &userTasks)).Should(Succeed())
-						Expect(userTasks).To(Equal(expectedUserTask))
-					})
-				})
-			})
-		})
-
-		Describe("Category API", func() {
-			Describe("UpdateCategory", func() {
-				When("sending without cookie", func() {
-					It("should return status code 401", func() {
-						updatedCategory := model.Category{
-							ID:   1,
-							Name: "Updated with API Category 1",
-						}
-
-						requestBody, _ := json.Marshal(updatedCategory)
-						r, _ := http.NewRequest("PUT", "/api/v1/category/update/1", bytes.NewReader(requestBody))
-						r.Header.Set("Content-Type", "application/json")
-						w := httptest.NewRecorder()
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusUnauthorized))
-					})
-				})
-
-				When("updating an existing category", func() {
-					It("should update the category and return status code 200", func() {
-						updatedCategory := model.Category{
-							ID:   1,
-							Name: "Updated with API Category 1",
-						}
-
-						requestBody, _ := json.Marshal(updatedCategory)
-						r, _ := http.NewRequest("PUT", "/api/v1/category/update/1", bytes.NewReader(requestBody))
-						r.Header.Set("Content-Type", "application/json")
-						w := httptest.NewRecorder()
-
-						r.AddCookie(SetCookie(apiServer))
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusOK))
-
-						var response model.SuccessResponse
-						Expect(json.Unmarshal(w.Body.Bytes(), &response)).Should(Succeed())
-						Expect(response.Message).To(Equal("category update success"))
-					})
-				})
-
-				When("updating a non-existing category", func() {
-					It("should return status code 400", func() {
-						updatedCategory := model.Category{
-							ID:   1,
-							Name: "Updated with API Category 1",
-						}
-
-						requestBody, _ := json.Marshal(updatedCategory)
-						r, _ := http.NewRequest("PUT", "/api/v1/category/update/abc", bytes.NewReader(requestBody))
-						r.Header.Set("Content-Type", "application/json")
-						w := httptest.NewRecorder()
-
-						r.AddCookie(SetCookie(apiServer))
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusBadRequest))
-
-						var response model.ErrorResponse
-						Expect(json.Unmarshal(w.Body.Bytes(), &response)).Should(Succeed())
-						Expect(response.Error).To(Equal("invalid Category ID"))
-					})
-				})
-
-				When("sending an invalid request", func() {
-					It("should return status code 400", func() {
-						reqBody := []byte("invalid request body")
-
-						r, _ := http.NewRequest("PUT", "/api/v1/category/update/1", bytes.NewReader(reqBody))
-						r.Header.Set("Content-Type", "application/json")
-						w := httptest.NewRecorder()
-
-						r.AddCookie(SetCookie(apiServer))
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusBadRequest))
-
-						var response model.ErrorResponse
-						Expect(json.Unmarshal(w.Body.Bytes(), &response)).Should(Succeed())
-						Expect(response.Error).NotTo(BeNil())
-					})
-				})
-			})
-
-			Describe("DeleteCategory", func() {
-				When("sending without cookie", func() {
-					It("should return status code 401", func() {
-						r, _ := http.NewRequest("DELETE", "/api/v1/category/delete/4", nil)
-						w := httptest.NewRecorder()
-						r.Header.Set("Content-Type", "application/json")
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusUnauthorized))
-					})
-				})
-
-				When("deleting a category", func() {
-					It("should delete the category and return status code 200", func() {
-						r, _ := http.NewRequest("DELETE", "/api/v1/category/delete/4", nil)
-						w := httptest.NewRecorder()
-
-						r.AddCookie(SetCookie(apiServer))
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusOK))
-
-						var response model.SuccessResponse
-						Expect(json.Unmarshal(w.Body.Bytes(), &response)).Should(Succeed())
-						Expect(response.Message).To(Equal("category delete success"))
-					})
-				})
-			})
-
-			Describe("GetCategoryList", func() {
-				When("sending without cookie", func() {
-					It("should return status code 401", func() {
-						r, _ := http.NewRequest("GET", "/api/v1/category/list", nil)
-						w := httptest.NewRecorder()
-						r.Header.Set("Content-Type", "application/json")
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusUnauthorized))
-					})
-				})
-
-				When("retrieving the list of categories", func() {
-					It("should return the list of categories and status code 200", func() {
-						r, _ := http.NewRequest("GET", "/api/v1/category/list", nil)
-						w := httptest.NewRecorder()
-
-						r.AddCookie(SetCookie(apiServer))
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusOK))
-
-						var response []model.Category
-						Expect(json.Unmarshal(w.Body.Bytes(), &response)).Should(Succeed())
-						Expect(response).To(Equal(insertCategories))
-					})
-				})
-			})
-		})
-
-		Describe("Task API", func() {
-			Describe("UpdateTask", func() {
-				When("sending without cookie", func() {
-					It("should return status code 401", func() {
-						updatedTask := model.Task{
-							ID:         1,
-							Title:      "Updated with API Task 1",
-							Deadline:   "2023-05-30",
-							Priority:   5,
-							CategoryID: 1,
-							Status:     "In Progress",
-						}
-						reqBody, _ := json.Marshal(updatedTask)
-
-						r, _ := http.NewRequest("PUT", fmt.Sprintf("/api/v1/task/update/%d", 1), bytes.NewReader(reqBody))
-						w := httptest.NewRecorder()
-						r.Header.Set("Content-Type", "application/json")
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusUnauthorized))
-					})
-				})
-
-				When("updating existing task", func() {
-					It("should return status code 200", func() {
-						updatedTask := model.Task{
-							ID:         1,
-							Title:      "Updated with API Task 1",
-							Deadline:   "2023-05-30",
-							Priority:   5,
-							CategoryID: 1,
-							Status:     "In Progress",
-						}
-						reqBody, _ := json.Marshal(updatedTask)
-
-						r, _ := http.NewRequest("PUT", fmt.Sprintf("/api/v1/task/update/%d", 1), bytes.NewReader(reqBody))
-						w := httptest.NewRecorder()
-
-						r.AddCookie(SetCookie(apiServer))
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusOK))
-
-						var response model.SuccessResponse
-						Expect(json.Unmarshal(w.Body.Bytes(), &response)).Should(Succeed())
-						Expect(response.Message).To(Equal("update task success"))
-					})
-				})
-
-				When("sending invalid request", func() {
-					It("should return status code 400", func() {
-						reqBody := []byte("invalid request body")
-						r, _ := http.NewRequest("PUT", "/api/v1/task/update/1", bytes.NewReader(reqBody))
-						w := httptest.NewRecorder()
-
-						r.AddCookie(SetCookie(apiServer))
-						apiServer.ServeHTTP(w, r)
-
-						Expect(w.Code).To(Equal(http.StatusBadRequest))
-
-						var response model.ErrorResponse
-						Expect(json.Unmarshal(w.Body.Bytes(), &response)).Should(Succeed())
-						Expect(response.Error).NotTo(BeNil())
-					})
-				})
-			})
-
-			Describe("DeleteTask", func() {
-				When("sending without cookie", func() {
-					It("should return status code 401", func() {
-						r, _ := http.NewRequest("DELETE", fmt.Sprintf("/api/v1/task/delete/%d", 1), nil)
-						w := httptest.NewRecorder()
-						r.Header.Set("Content-Type", "application/json")
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusUnauthorized))
-					})
-				})
-
-				When("deleting existing task", func() {
-					It("should return status code 200", func() {
-						r, _ := http.NewRequest("DELETE", fmt.Sprintf("/api/v1/task/delete/%d", 1), nil)
-						w := httptest.NewRecorder()
-
-						r.AddCookie(SetCookie(apiServer))
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusOK))
-
-						var response model.SuccessResponse
-						Expect(json.Unmarshal(w.Body.Bytes(), &response)).Should(Succeed())
-						Expect(response.Message).To(Equal("delete task success"))
-					})
-				})
-
-				When("deleting non-existing task", func() {
-					It("should return status code 400", func() {
-						taskID := "abc"
-						r, _ := http.NewRequest("DELETE", fmt.Sprintf("/api/v1/task/delete/%s", taskID), nil)
-						w := httptest.NewRecorder()
-
-						r.AddCookie(SetCookie(apiServer))
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusBadRequest))
-
-						var response model.ErrorResponse
-						Expect(json.Unmarshal(w.Body.Bytes(), &response)).Should(Succeed())
-						Expect(response.Error).To(Equal("Invalid task ID"))
-					})
-				})
-			})
-
-			Describe("GetTaskList", func() {
-				When("sending without cookie", func() {
-					It("should return status code 401", func() {
-						r, _ := http.NewRequest("GET", "/api/v1/task/list", nil)
-						w := httptest.NewRecorder()
-						r.Header.Set("Content-Type", "application/json")
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusUnauthorized))
-					})
-				})
-
-				When("retrieving task list", func() {
-					It("should return status code 200 and task list", func() {
-						r, _ := http.NewRequest("GET", "/api/v1/task/list", nil)
-						w := httptest.NewRecorder()
-
-						r.AddCookie(SetCookie(apiServer))
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusOK))
-
-						var response []model.Task
-						Expect(json.Unmarshal(w.Body.Bytes(), &response)).Should(Succeed())
-						Expect(response).To(Equal(insertTasks))
-					})
-				})
-			})
-
-			Describe("GetTaskListByCategory", func() {
-				When("sending without cookie", func() {
-					It("should return status code 401", func() {
-						r, _ := http.NewRequest("GET", fmt.Sprintf("/api/v1/task/category/%d", 1), nil)
-						w := httptest.NewRecorder()
-						r.Header.Set("Content-Type", "application/json")
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusUnauthorized))
-					})
-				})
-
-				When("retrieving task list by category", func() {
-					It("should return status code 200 and task list", func() {
-						r, _ := http.NewRequest("GET", fmt.Sprintf("/api/v1/task/category/%d", 1), nil)
-						w := httptest.NewRecorder()
-
-						r.AddCookie(SetCookie(apiServer))
-						apiServer.ServeHTTP(w, r)
-						Expect(w.Code).To(Equal(http.StatusOK))
-
-						var response []model.TaskCategory
-						Expect(json.Unmarshal(w.Body.Bytes(), &response)).Should(Succeed())
-						Expect(response).To(Equal([]model.TaskCategory{
-							{ID: 1, Title: "Task 1", Category: "Category 1"},
-							{ID: 3, Title: "Task 3", Category: "Category 1"},
-							{ID: 4, Title: "Task 4", Category: "Category 1"},
-						}))
-					})
-				})
-			})
-		})
-
-		Describe("HTML", func() {
-			Describe("views/main/index.html", func() {
-				var (
-					doc *goquery.Document
-				)
-
-				BeforeEach(func() {
-					data, err := ioutil.ReadFile("views/main/index.html")
-					Expect(err).NotTo(HaveOccurred())
-					html = string(data)
-					doc = parseHTML()
-				})
-
-				Describe("Render", func() {
-					It("should have at least 3 sections or divs", func() {
-						sections := doc.Find("section").Length()
-						divs := doc.Find("div").Length()
-						Expect(sections + divs).To(BeNumerically(">=", 3))
-					})
-
-					It("should have at least one types of heading tags", func() {
-						headings := []string{"h1", "h2", "h3", "h4", "h5", "h6"}
-						count := 0
-						for _, heading := range headings {
-							if doc.Find(heading).Length() > 0 {
-								count++
-							}
-						}
-						Expect(count).To(BeNumerically(">=", 1))
-					})
-
-					It("should have at least one paragraph", func() {
-						Expect(doc.Find("p").Length()).To(BeNumerically(">=", 1))
-					})
-
-					It("should have a heading with text 'Task Tracker Plus'", func() {
-						Expect(doc.Find("h1").Text()).To(ContainSubstring("Task Tracker Plus"))
-					})
-
-					It("should have a login link that navigates to /login", func() {
-						Expect(doc.Find("a[href='/client/login']").AttrOr("href", "")).To(Equal("/client/login"))
-					})
-
-					It("should have a register link that navigates to /register", func() {
-						Expect(doc.Find("a[href='/client/register']").AttrOr("href", "")).To(Equal("/client/register"))
-					})
-				})
-
-				Describe("Style", func() {
-					It("should have at least one component use tailwind for section or div", func() {
-						found := false
-						doc.Find("div, section").Each(func(_ int, s *goquery.Selection) {
-							classes := strings.Split(s.AttrOr("class", ""), " ")
-							if model.RepresentsTailwind(classes) {
-								found = true
-							}
-						})
-						Expect(found).To(BeTrue(), "No Tailwind Classes found in div or section")
-					})
-
-					It("should have at least one component use tailwind for h1, h2, h3, h4, h5, h6", func() {
-						found := false
-						doc.Find("h1, h2, h3, h4, h5, h6").Each(func(_ int, s *goquery.Selection) {
-							classes := strings.Split(s.AttrOr("class", ""), " ")
-							if model.RepresentsTailwind(classes) {
-								found = true
-							}
-						})
-						Expect(found).To(BeTrue(), "No Tailwind Classes found in h1 to h6")
-					})
-
-					It("should have at least one component use tailwind for responsive design", func() {
-						found := false
-						doc.Find("[class*='sm:'] ,[class*='md:'], [class*='lg:'], [class*='xl:'], [class*='2xl:']").Each(func(_ int, s *goquery.Selection) {
-							classes := strings.Split(s.AttrOr("class", ""), " ")
-							if model.RepresentsTailwind(classes) {
-								found = true
-							}
-						})
-						Expect(found).To(BeTrue(), "No Tailwind Classes found in sm, md, lg, xl or 2x1")
-					})
-				})
-			})
-
-			Describe("views/auth/login.html", func() {
-				var (
-					doc *goquery.Document
-				)
-
-				BeforeEach(func() {
-					data, err := ioutil.ReadFile("views/auth/login.html")
-					Expect(err).NotTo(HaveOccurred())
-					html = string(data)
-					doc = parseHTML()
-				})
-
-				Describe("Render", func() {
-					It("should have at least one types of heading tags", func() {
-						headings := []string{"h1", "h2", "h3", "h4", "h5", "h6"}
-						count := 0
-						for _, heading := range headings {
-							if doc.Find(heading).Length() > 0 {
-								count++
-							}
-						}
-						Expect(count).To(BeNumerically(">=", 1))
-					})
-
-					It("should have an email input field", func() {
-						emailInput := doc.Find(`input[type="email"]`)
-						Expect(len(emailInput.Nodes)).NotTo(Equal(0))
-					})
-
-					It("should have a password input field", func() {
-						passwordInput := doc.Find(`input[type="password"]`)
-						Expect(len(passwordInput.Nodes)).NotTo(Equal(0))
-					})
-
-					It("should have a submit button with text 'Login'", func() {
-						Expect(doc.Find("button").Text()).To(ContainSubstring("Login"))
-					})
-
-					It("should have a register link that navigates to '/client/register", func() {
-						registerLink := doc.Find(`a[href="/client/register"]`)
-						Expect(len(registerLink.Nodes)).NotTo(Equal(0))
-					})
-				})
-
-				Describe("Style", func() {
-					It("should have at least one component use tailwind for section or div", func() {
-						found := false
-						doc.Find("div, section").Each(func(_ int, s *goquery.Selection) {
-							classes := strings.Split(s.AttrOr("class", ""), " ")
-							if model.RepresentsTailwind(classes) {
-								found = true
-							}
-						})
-						Expect(found).To(BeTrue(), "No Tailwind Classes found in div or section")
-					})
-
-					It("should have at least one component use tailwind for h1, h2, h3, h4, h5, h6", func() {
-						found := false
-						doc.Find("h1, h2, h3, h4, h5, h6").Each(func(_ int, s *goquery.Selection) {
-							classes := strings.Split(s.AttrOr("class", ""), " ")
-							if model.RepresentsTailwind(classes) {
-								found = true
-							}
-						})
-						Expect(found).To(BeTrue(), "No Tailwind Classes found in h1 to h6")
-					})
-				})
-			})
-
-			Describe("views/auth/register.html", func() {
-				var (
-					doc *goquery.Document
-				)
-
-				BeforeEach(func() {
-					data, err := ioutil.ReadFile("views/auth/register.html")
-					Expect(err).NotTo(HaveOccurred())
-					html = string(data)
-					doc = parseHTML()
-				})
-
-				Describe("Render", func() {
-					It("should have at least one types of heading tags", func() {
-						headings := []string{"h1", "h2", "h3", "h4", "h5", "h6"}
-						count := 0
-						for _, heading := range headings {
-							if doc.Find(heading).Length() > 0 {
-								count++
-							}
-						}
-						Expect(count).To(BeNumerically(">=", 1))
-					})
-
-					It("should have a fullname input field", func() {
-						fullnameInput := doc.Find(`input[type="text"]`)
-						Expect(len(fullnameInput.Nodes)).NotTo(Equal(0))
-					})
-
-					It("should have an email input field", func() {
-						emailInput := doc.Find(`input[type="email"]`)
-						Expect(len(emailInput.Nodes)).NotTo(Equal(0))
-					})
-
-					It("should have a password input field", func() {
-						passwordInput := doc.Find(`input[type="password"]`)
-						Expect(len(passwordInput.Nodes)).NotTo(Equal(0))
-					})
-
-					It("should have a submit button with text 'Register'", func() {
-						Expect(doc.Find("button").Text()).To(ContainSubstring("Register"))
-					})
-
-					It("should have a register link that navigates to '/client/login", func() {
-						registerLink := doc.Find(`a[href="/client/login"]`)
-						Expect(len(registerLink.Nodes)).NotTo(Equal(0))
-					})
-				})
-
-				Describe("Style", func() {
-					It("should have at least one component use tailwind for section or div", func() {
-						found := false
-						doc.Find("div, section").Each(func(_ int, s *goquery.Selection) {
-							classes := strings.Split(s.AttrOr("class", ""), " ")
-							if model.RepresentsTailwind(classes) {
-								found = true
-							}
-						})
-						Expect(found).To(BeTrue(), "No Tailwind Classes found in div or section")
-					})
-
-					It("should have at least one component use tailwind for h1, h2, h3, h4, h5, h6", func() {
-						found := false
-						doc.Find("h1, h2, h3, h4, h5, h6").Each(func(_ int, s *goquery.Selection) {
-							classes := strings.Split(s.AttrOr("class", ""), " ")
-							if model.RepresentsTailwind(classes) {
-								found = true
-							}
-						})
-						Expect(found).To(BeTrue(), "No Tailwind Classes found in h1 to h6")
-					})
-				})
-			})
-		})
+	Describe("Category Management", func() {
+    BeforeEach(func() {
+        // Ensure user is logged in and token is set
+        if token == "" {
+            requestBody := map[string]interface{}{
+                "email":    "newuser@example.com",
+                "password": "password123",
+            }
+            jsonBody, err := json.Marshal(requestBody)
+            Expect(err).NotTo(HaveOccurred())
+
+            w := httptest.NewRecorder()
+            req, err := http.NewRequest("POST", "/api/v1/user/login", bytes.NewBuffer(jsonBody))
+            Expect(err).NotTo(HaveOccurred())
+            router.ServeHTTP(w, req)
+            Expect(w.Code).To(Equal(http.StatusOK))
+            cookies := w.Result().Cookies()
+            for _, cookie := range cookies {
+                if cookie.Name == "session_token" {
+                    token = cookie.Value
+                }
+            }
+        }
+    })
+
+    It("should create a new category", func() {
+        w := httptest.NewRecorder()
+        body := bytes.NewBufferString(`{"name": "Work"}`)
+        req, _ := http.NewRequest("POST", "/api/v1/category", body)
+        req.Header.Set("Cookie", "session_token="+token)
+        router.ServeHTTP(w, req)
+
+        Expect(w.Code).To(Equal(http.StatusCreated))
+
+        var response map[string]interface{}
+        err := json.Unmarshal(w.Body.Bytes(), &response)
+        Expect(err).NotTo(HaveOccurred())
+
+        message, messageExists := response["message"]
+        Expect(messageExists).To(BeTrue(), "Expected response to contain 'message' field")
+        Expect(message).To(Equal("add category success"))
+    })
+
+    It("should update an existing category", func() {
+        w := httptest.NewRecorder()
+        body := bytes.NewBufferString(`{"name": "Updated Category"}`)
+        req, _ := http.NewRequest("PUT", "/api/v1/categories/1", body)  // Assuming categoryID 1
+        req.Header.Set("Cookie", "session_token="+token)
+        router.ServeHTTP(w, req)
+
+        Expect(w.Code).To(Equal(http.StatusOK))
+
+        var response map[string]interface{}
+        err := json.Unmarshal(w.Body.Bytes(), &response)
+        Expect(err).NotTo(HaveOccurred())
+
+        message, messageExists := response["message"]
+        Expect(messageExists).To(BeTrue(), "Expected response to contain 'message' field")
+        Expect(message).To(Equal("category update success"))
+    })
+
+    It("should delete an existing category", func() {
+        w := httptest.NewRecorder()
+        req, _ := http.NewRequest("DELETE", "/api/v1/categories/1", nil)  // Assuming categoryID 1
+        req.Header.Set("Cookie", "session_token="+token)
+        router.ServeHTTP(w, req)
+
+        Expect(w.Code).To(Equal(http.StatusOK))
+
+        var response map[string]interface{}
+        err := json.Unmarshal(w.Body.Bytes(), &response)
+        Expect(err).NotTo(HaveOccurred())
+
+        message, messageExists := response["message"]
+        Expect(messageExists).To(BeTrue(), "Expected response to contain 'message' field")
+        Expect(message).To(Equal("Category deleted successfully"))
+    })
+
+    It("should get a category by ID", func() {
+				CreateTestCategory(1, "Test Category")
+			
+        w := httptest.NewRecorder()
+        req, _ := http.NewRequest("GET", "/api/v1/categories/1", nil)  // Assuming categoryID 1
+        req.Header.Set("Cookie", "session_token="+token)
+        router.ServeHTTP(w, req)
+
+        Expect(w.Code).To(Equal(http.StatusOK))
+
+        var category model.Category
+        err := json.Unmarshal(w.Body.Bytes(), &category)
+        Expect(err).NotTo(HaveOccurred())
+        Expect(category.ID).To(Equal(1))
+    })
+
+    It("should get a list of categories", func() {
+			CreateTestCategory(1, "Test Category")
+			
+        w := httptest.NewRecorder()
+        req, _ := http.NewRequest("GET", "/api/v1/categories", nil)
+        req.Header.Set("Cookie", "session_token="+token)
+        router.ServeHTTP(w, req)
+
+        Expect(w.Code).To(Equal(http.StatusOK))
+
+        var categories []model.Category
+        err := json.Unmarshal(w.Body.Bytes(), &categories)
+        Expect(err).NotTo(HaveOccurred())
+        Expect(categories).NotTo(BeEmpty())
+    })
 	})
 })

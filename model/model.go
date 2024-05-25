@@ -3,8 +3,10 @@ package model
 import "time"
 
 type Category struct {
-	ID   int    `gorm:"primaryKey" json:"id"`
-	Name string `json:"name"`
+	ID        int       `gorm:"primaryKey" json:"id"`
+	Name      string    `json:"name"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type User struct {
@@ -14,6 +16,7 @@ type User struct {
 	Password  string    `json:"password" gorm:"type:varchar(255);not null"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	Tasks     []Task    `json:"tasks" gorm:"foreignKey:UserID"`
 }
 
 type UserLogin struct {
@@ -28,20 +31,24 @@ type UserRegister struct {
 }
 
 type Task struct {
-	ID         int    `gorm:"primaryKey" json:"id"`
-	Title      string `json:"title"`
-	Deadline   string `json:"deadline"`
-	Priority   int    `json:"priority"`
-	Status     string `json:"status"`
-	CategoryID int    `json:"category_id"`
-	UserID     int    `json:"user_id"`
+	ID         int       `gorm:"primaryKey" json:"id"`
+	Title      string    `json:"title"`
+	Deadline   string    `json:"deadline"`
+	Priority   int       `json:"priority"`
+	Status     string    `json:"status"`
+	CategoryID int       `json:"category_id"`
+	UserID     int       `json:"user_id"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 
 type Session struct {
-	ID     int       `gorm:"primaryKey" json:"id"`
-	Token  string    `json:"token"`
-	Email  string    `json:"email"`
-	Expiry time.Time `json:"expiry"`
+	ID        int       `gorm:"primaryKey" json:"id"`
+	Token     string    `json:"token"`
+	Email     string    `json:"email"`
+	Expiry    time.Time `json:"expiry"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 type TaskCategory struct {

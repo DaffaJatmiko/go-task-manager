@@ -1,46 +1,49 @@
 package repository
 
 import (
-	"github.com/DaffaJatmiko/go-task-manager/db/filebased"
 	"github.com/DaffaJatmiko/go-task-manager/model"
+	"gorm.io/gorm"
 )
 
 type UserRepository interface {
 	GetUserByEmail(email string) (model.User, error)
 	CreateUser(user model.User) (model.User, error)
-	GetUserTaskCategory() ([]model.UserTaskCategory, error)
+	GetUserTaskCategory(userID uint) ([]model.UserTaskCategory, error)
 }
 
 type userRepository struct {
-	filebasedDb *filebased.Data
+	db *gorm.DB
 }
 
-func NewUserRepo(filebasedDb *filebased.Data) *userRepository {
-	return &userRepository{filebasedDb}
+func NewUserRepo(db *gorm.DB) UserRepository {
+	return &userRepository{db}
 }
 
 func (r *userRepository) GetUserByEmail(email string) (model.User, error) {
-	userByEmail, err := r.filebasedDb.GetUserByEmail(email)
-	if err != nil {
+	var user model.User
+	if err := r.db.Where("email = ?", email).First(&user).Error; err != nil {
 		return model.User{}, err
 	}
-	return userByEmail, nil // TODO: replace this
+	return user, nil
 }
 
 func (r *userRepository) CreateUser(user model.User) (model.User, error) {
-	createdUser, err := r.filebasedDb.CreateUser(user)
-
-	if err != nil {
+	if err := r.db.Create(&user).Error; err != nil {
 		return model.User{}, err
 	}
-
-	return createdUser, nil
+	return user, nil
 }
 
-func (r *userRepository) GetUserTaskCategory() ([]model.UserTaskCategory, error) {
-	userTask, err := r.filebasedDb.GetUserTaskCategory()
-	if err != nil {
-		return []model.UserTaskCategory{}, err
+func (r *userRepository) GetUserTaskCategory(userID uint) ([]model.UserTaskCategory, error) {
+	var userTaskCategories []model.UserTaskCategory
+	if err := r.db.Table("users").
+		Select("users.id, users.fullname, users.email, tasks.title as task, tasks.deadline, tasks.priority, tasks.status, categories.name as category").
+		Joins("left join tasks on tasks.user_id = users.id").
+		Joins("left join categories on tasks.category_id = categories.id").
+		Where("users.id = ?", userID).
+		Scan(&userTaskCategories).Error; err != nil {
+		return nil, err
 	}
-	return userTask, nil // TODO: replace this
+	return userTaskCategories, nil
 }
+
