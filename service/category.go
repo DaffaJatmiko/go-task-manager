@@ -1,6 +1,9 @@
 package service
 
 import (
+	"context"
+
+	"github.com/DaffaJatmiko/go-task-manager/config"
 	"github.com/DaffaJatmiko/go-task-manager/model"
 	repo "github.com/DaffaJatmiko/go-task-manager/repository"
 )
@@ -22,15 +25,27 @@ func NewCategoryService(categoryRepository repo.CategoryRepository) CategoryServ
 }
 
 func (s *categoryService) Store(category *model.Category) error {
-	return s.categoryRepository.Store(category)
+	err := s.categoryRepository.Store(category)
+	if err == nil {
+		config.RedisClient.Del(context.Background(), "categoryList")
+	}
+	return nil
 }
 
 func (s *categoryService) Update(id int, category model.Category) error {
-	return s.categoryRepository.Update(id, category)
+	err := s.categoryRepository.Update(id, category)
+	if err == nil {
+		config.RedisClient.Del(context.Background(), "categoryList")
+	}
+	return nil
 }
 
 func (s *categoryService) Delete(id int) error {
-	return s.categoryRepository.Delete(id)
+	err := s.categoryRepository.Delete(id)
+	if err == nil {
+		config.RedisClient.Del(context.Background(), "categoryList")
+	}
+	return nil
 }
 
 func (s *categoryService) GetByID(id int) (*model.Category, error) {

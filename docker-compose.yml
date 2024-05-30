@@ -16,6 +16,14 @@ services:
     networks:
       - go-task-network
 
+  redis:
+    image: redis:6-alpine
+    container_name: redis
+    ports:
+      - '6379:6379'
+    networks:
+      - go-task-network
+
   app:
     build:
       context: .
@@ -30,10 +38,13 @@ services:
       DB_NAME: task_manager
       DB_SSLMODE: disable
       DB_TIMEZONE: Asia/Shanghai
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
     ports:
       - '8080:8080'
     depends_on:
       - db
+      - redis
     restart: on-failure
     networks:
       - go-task-network

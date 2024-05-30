@@ -1,10 +1,17 @@
 package api
 
 import (
-	"github.com/DaffaJatmiko/go-task-manager/model"
-	"github.com/DaffaJatmiko/go-task-manager/service"
+	"context"
+	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
+
+	"github.com/DaffaJatmiko/go-task-manager/config"
+	"github.com/DaffaJatmiko/go-task-manager/model"
+	"github.com/DaffaJatmiko/go-task-manager/service"
+	"github.com/go-redis/redis/v8"
 
 	"github.com/gin-gonic/gin"
 )
@@ -97,11 +104,40 @@ func (ct *categoryAPI) GetCategoryByID(c *gin.Context) {
 }
 
 func (ct *categoryAPI) GetCategoryList(c *gin.Context) {
-	categoryList, err := ct.categoryService.GetList()
-	if err != nil {
+	ctx := context.Background()
+
+	//cek cache terlebih dahulu
+	cachedCategories, err := config.RedisClient.Get(ctx, "categoryList").Result()
+	if err == redis.Nil {
+		//cache tidak ditemukan, ambil dari database
+		categoryList, err := ct.categoryService.GetList()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error()))
+			return
+		}
+
+		//simpan ke cache
+		categoryData, err := json.Marshal(categoryList)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error()))
+			return
+		}
+		config.RedisClient.Set(ctx, "categoryList", categoryData, 5*time.Minute)
+
+		log.Println("Category list fetched from database")
+		c.JSON(http.StatusOK, categoryList)
+	} else if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error()))
 		return
+	} else {
+		//cache ditemukan, kembalikan dari cache
+		var categories []model.Category
+		err = json.Unmarshal([]byte(cachedCategories), &categories)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error()))
+			return
+		}
+		log.Println("Category list fetched from cache")
+		c.JSON(http.StatusOK, categories)
 	}
-
-	c.JSON(http.StatusOK, categoryList)
 }

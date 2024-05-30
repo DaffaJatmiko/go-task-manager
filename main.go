@@ -50,6 +50,7 @@ func main() {
 	}
 
 	config.ConnectDB()
+	config.InitRedis() 
 
 	// Jalankan migrasi
 	if err := migrations.Migrate(config.DB); err != nil {

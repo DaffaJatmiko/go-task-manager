@@ -1,12 +1,19 @@
 package api
 
 import (
-	"github.com/DaffaJatmiko/go-task-manager/model"
-	"github.com/DaffaJatmiko/go-task-manager/service"
+	"context"
+	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
+	"time"
+
+	"github.com/DaffaJatmiko/go-task-manager/config"
+	"github.com/DaffaJatmiko/go-task-manager/model"
+	"github.com/DaffaJatmiko/go-task-manager/service"
 
 	"github.com/gin-gonic/gin"
+	"github.com/go-redis/redis/v8"
 )
 
 type TaskAPI interface {
@@ -39,6 +46,9 @@ func (t *taskAPI) AddTask(c *gin.Context) {
 		return
 	}
 
+	// Hapus cache setelah menambahkan task baru
+	config.RedisClient.Del(context.Background(), "taskList")
+
 	c.JSON(http.StatusCreated, model.NewSuccessResponse("add task success"))
 }
 
@@ -62,6 +72,9 @@ func (t *taskAPI) UpdateTask(c *gin.Context) {
 		return
 	}
 
+	// Hapus cache setelah mengupdate task
+	config.RedisClient.Del(context.Background(), "taskList")
+
 	c.JSON(http.StatusOK, model.NewSuccessResponse("update task success"))
 }
 
@@ -77,6 +90,9 @@ func (t *taskAPI) DeleteTask(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error()))
 		return
 	}
+
+	// Hapus cache setelah menghapus task
+	config.RedisClient.Del(context.Background(), "taskList")
 
 	c.JSON(http.StatusOK, model.NewSuccessResponse("Task deleted successfully"))
 }
@@ -98,13 +114,43 @@ func (t *taskAPI) GetTaskByID(c *gin.Context) {
 }
 
 func (t *taskAPI) GetTaskList(c *gin.Context) {
-	taskList, err := t.taskService.GetList()
-	if err != nil {
+	ctx := context.Background()
+
+	// Cek cache terlebih dahulu
+	cachedTasks, err := config.RedisClient.Get(ctx, "taskList").Result()
+	if err == redis.Nil {
+		// Cache tidak ditemukan, ambil dari database
+		taskList, err := t.taskService.GetList()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error()))
+			return
+		}
+
+		// Simpan hasil ke cache
+		taskData, err := json.Marshal(taskList)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error()))
+			return
+		}
+		config.RedisClient.Set(ctx, "taskList", taskData, 5*time.Minute)
+
+		log.Println("Task list fetched from database")
+		c.JSON(http.StatusOK, taskList)
+	} else if err != nil {
 		c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error()))
 		return
-	}
+	} else {
+		// Cache ditemukan, kembalikan dari cache
+		var tasks []model.Task
+		err := json.Unmarshal([]byte(cachedTasks), &tasks)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, model.NewErrorResponse(err.Error()))
+			return
+		}
 
-	c.JSON(http.StatusOK, taskList)
+		log.Println("Task list fetched from cache")
+		c.JSON(http.StatusOK, tasks)
+	}
 }
 
 func (t *taskAPI) GetTaskListByCategory(c *gin.Context) {

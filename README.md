@@ -11,6 +11,7 @@ Go Task Manager is a comprehensive task management application developed using t
 - **ORM**: Gorm
 - **API Framework**: Gin
 - **Containerization**: Docker
+- **Caching**: Redis
 - **Authentication**: JSON Web Token (JWT)
 - **Testing**: Ginkgo
 
@@ -23,6 +24,7 @@ Go Task Manager is a comprehensive task management application developed using t
 - **Input Validation**: Validation of user input data.
 - **API Documentation**: Includes a Postman Collection for easy testing and interaction with the API endpoints.
 - **Testing**: Comprehensive unit testing using Ginkgo to ensure the reliability and correctness of the API endpoints.
+- **Caching**: Utilizes Redis to cache task list and category list for improved performance.
 
 ## How to Run the Program
 
@@ -37,17 +39,16 @@ Ensure you have installed:
 
 ### Steps
 
-1. **Clone Repository**
+1. **Pull Docker Image**
 
 ```bash
-git clone https://github.com/username/go-task-manager.git
-cd go-task-manager
+docker pull daffajatmiko/go-task-manager:v1.0.1
 ```
 
-2. **Build and Run Docker Containers**
+1. **Run Docker Containers**
 
 ```bash
-docker-compose up --build
+docker run -p 8080:8080 daffajatmiko/go-task-manager:v1.0.1
 ```
 
 3. **Accessing the API**

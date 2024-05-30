@@ -1,6 +1,9 @@
 package service
 
 import (
+	"context"
+
+	"github.com/DaffaJatmiko/go-task-manager/config"
 	"github.com/DaffaJatmiko/go-task-manager/model"
 	repo "github.com/DaffaJatmiko/go-task-manager/repository"
 )
@@ -23,15 +26,27 @@ func NewTaskService(taskRepository repo.TaskRepository) TaskService {
 }
 
 func (s *taskService) Store(task *model.Task) error {
-	return s.taskRepository.Store(task)
+	err := s.taskRepository.Store(task)
+	if err == nil {
+		config.RedisClient.Del(context.Background(), "taskList")
+	}
+	return err
 }
 
 func (s *taskService) Update(id int, task *model.Task) error {
-	return s.taskRepository.Update(id, task)
+	err := s.taskRepository.Update(id, task)
+	if err == nil {
+		config.RedisClient.Del(context.Background(), "taskList")
+	}
+	return err
 }
 
 func (s *taskService) Delete(id int) error {
-	return s.taskRepository.Delete(id)
+	err := s.taskRepository.Delete(id)
+	if err == nil {
+		config.RedisClient.Del(context.Background(), "taskList")
+	}
+	return err
 }
 
 func (s *taskService) GetByID(id int) (*model.Task, error) {
